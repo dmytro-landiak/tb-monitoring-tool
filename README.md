@@ -1,5 +1,5 @@
-# env-status-test
-Thingsboard environment status test
+# thingsboard-env-monitoring-tool
+Thingsboard environment monitoring tool
 
 The project that is able to check the status of the Thingsboard environment by sending the messages to a specified number of devices and expect them to be processed within a given period of time.
 
@@ -9,7 +9,7 @@ The project that is able to check the status of the Thingsboard environment by s
 
 ## Running
 
-To run test against ThingsBoard first create plain text file to set up test configuration (in our example configuration file name is *.env*):
+To run tool against ThingsBoard first create plain text file to set up test configuration (in our example configuration file name is *.env*):
 ```bash
 touch .env
 ```
@@ -43,6 +43,8 @@ EMAIL_ALERT_EMAILS=YOUR_EMAIL_ADDRESSES
 EMAIL_ALERT_PERIOD=60
 EMAIL_STATUS_EMAIL=YOUR_EMAIL_ADDRESSES
 EMAIL_STATUS_PERIOD=360
+EMAIL_SMTP_USERNAME=YOUR_USERNAME
+EMAIL_SMTP_PASSWORD=YOUR_PASSWORD
 ```
 
 Where: 
@@ -61,6 +63,8 @@ Where:
 - `EMAIL_ALERT_PERIOD`           - Time between sending the alert emails (in minutes)
 - `EMAIL_STATUS_EMAIL`           - Comma separated list of emails to send a status of the script
 - `EMAIL_STATUS_PERIOD`          - Time between sending the script status emails (in minutes)
+- `EMAIL_SMTP_USERNAME`          - Email username from which to send the mails
+- `EMAIL_SMTP_PASSWORD`          - Email password from which to send the mails
 
   
 Once params are configured to run monitoring tool type from the folder where configuration file is located:
