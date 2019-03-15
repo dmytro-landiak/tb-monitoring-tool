@@ -19,16 +19,36 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.handler.codec.mqtt.MqttQoS;
+import io.netty.util.concurrent.Future;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.Netty4ClientHttpRequestFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.util.concurrent.ListenableFuture;
+import org.springframework.util.concurrent.ListenableFutureCallback;
+import org.springframework.web.client.AsyncRestTemplate;
 import org.thingsboard.client.tools.RestClient;
+import org.thingsboard.mqtt.MqttClient;
+import org.thingsboard.mqtt.MqttClientConfig;
+import org.thingsboard.mqtt.MqttConnectResult;
 import org.thingsboard.server.common.data.Device;
 import org.thingsboard.server.common.data.id.DeviceId;
 import org.thingsboard.tools.service.email.EmailService;
 import org.thingsboard.tools.service.websocket.WebSocketClientEndpoint;
 
+import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -39,38 +59,47 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
-public abstract class BaseDeviceAPITest implements DeviceAPITest {
+@Service
+public class BaseDeviceAPITest implements DeviceAPITest {
 
-    static ObjectMapper mapper = new ObjectMapper();
-
-    static final int LOG_PAUSE = 1;
-    static final int PUBLISHED_MESSAGES_LOG_PAUSE = 5;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int CONNECT_TIMEOUT = 5;
+    private static final int PUBLISHED_MESSAGES_LOG_PAUSE = 5;
     private static final int TASKS_CHECK_PAUSE = 60;
     private static final int MIN_NUMB = 0;
     private static final int MAX_NUMB = 50;
 
-    @Value("${device.count}")
-    int deviceCount;
+    @Autowired
+    private EmailService emailService;
 
     @Value("${rest.url}")
-    String restUrl;
+    private String restUrl;
 
     @Value("${rest.webSocketUrl}")
-    String webSocketUrl;
+    private String webSocketUrl;
 
     @Value("${rest.username}")
-    String username;
+    private String username;
 
     @Value("${rest.password}")
-    String password;
+    private String password;
+
+    @Value("${mqtt.host}")
+    private String mqttHost;
+
+    @Value("${mqtt.port}")
+    private int mqttPort;
+
+    @Value("${device.count}")
+    private int deviceCount;
 
     @Value("${performance.duration}")
-    int duration;
+    private int duration;
 
     @Value("${email.alertEmailsPeriod}")
     private int alertEmailsPeriod;
@@ -78,23 +107,30 @@ public abstract class BaseDeviceAPITest implements DeviceAPITest {
     @Value("${email.statusEmailPeriod}")
     private int statusEmailPeriod;
 
-    @Autowired
-    private EmailService emailService;
+    private final ScheduledExecutorService warmUpExecutor = Executors.newScheduledThreadPool(10);
+    private final ExecutorService httpExecutor = Executors.newFixedThreadPool(10);
+    private final ScheduledExecutorService scheduledExecutor = Executors.newScheduledThreadPool(10);
 
-    RestClient restClient;
+    private final Map<Integer, TbCheckTask> subscriptionsMap = new ConcurrentHashMap<>();
+    private final Map<String, SubscriptionData> deviceMap = new ConcurrentHashMap<>();
+    private final Map<String, MqttClient> mqttClientsMap = new ConcurrentHashMap<>();
 
-    final ExecutorService httpExecutor = Executors.newFixedThreadPool(100);
-    final ScheduledExecutorService scheduledExecutor = Executors.newScheduledThreadPool(10);
+    private final SendEmailData sendEmailData = new SendEmailData();
 
-    final Map<Integer, TbCheckTask> subscriptionsMap = new ConcurrentHashMap<>();
-    final Map<String, SubscriptionData> deviceMap = new ConcurrentHashMap<>();
-
+    private RestClient restClient;
     private WebSocketClientEndpoint clientEndPoint;
-    private boolean sendEmail;
+    private EventLoopGroup eventLoopGroup;
+    private AsyncRestTemplate httpClient;
 
+    @PostConstruct
     void init() {
         restClient = new RestClient(restUrl);
         restClient.login(username, password);
+
+        eventLoopGroup = new NioEventLoopGroup();
+        Netty4ClientHttpRequestFactory nettyFactory = new Netty4ClientHttpRequestFactory(eventLoopGroup);
+        httpClient = new AsyncRestTemplate(nettyFactory);
+
         try {
             clientEndPoint = new WebSocketClientEndpoint(new URI(webSocketUrl + "=" + restClient.getToken()));
             handleWebSocketMsg();
@@ -106,12 +142,22 @@ public abstract class BaseDeviceAPITest implements DeviceAPITest {
         scheduleTasksCheck();
     }
 
+    @PreDestroy
     void destroy() {
+        for (MqttClient mqttClient : mqttClientsMap.values()) {
+            mqttClient.disconnect();
+        }
         if (!this.httpExecutor.isShutdown()) {
             this.httpExecutor.shutdown();
         }
         if (!this.scheduledExecutor.isShutdown()) {
             this.scheduledExecutor.shutdown();
+        }
+        if (!this.warmUpExecutor.isShutdown()) {
+            this.warmUpExecutor.shutdown();
+        }
+        if (this.eventLoopGroup != null) {
+            this.eventLoopGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS);
         }
     }
 
@@ -140,24 +186,7 @@ public abstract class BaseDeviceAPITest implements DeviceAPITest {
                 }
             });
         }
-
-        ScheduledFuture<?> logScheduleFuture = scheduledExecutor.scheduleAtFixedRate(() -> {
-            try {
-                log.info("{} devices have been created so far...", count.get());
-            } catch (Exception ignored) {
-            }
-        }, 0, LOG_PAUSE, TimeUnit.SECONDS);
-
-        ScheduledFuture<?> tokenRefreshScheduleFuture = scheduledExecutor.scheduleAtFixedRate(() -> {
-            try {
-                restClient.login(username, password);
-            } catch (Exception ignored) {
-            }
-        }, 10, 10, TimeUnit.MINUTES);
-
         latch.await();
-        tokenRefreshScheduleFuture.cancel(true);
-        logScheduleFuture.cancel(true);
         log.info("{} devices have been created successfully!", deviceMap.size());
     }
 
@@ -166,41 +195,232 @@ public abstract class BaseDeviceAPITest implements DeviceAPITest {
         int cmdId = 1;
         for (Map.Entry<String, SubscriptionData> entry : deviceMap.entrySet()) {
             SubscriptionData data = entry.getValue();
-            data.setSubscriptionId(cmdId);
             subscribeToWebSocket(data.getDeviceId(), cmdId);
+            data.setSubscriptionId(cmdId);
             cmdId++;
         }
     }
 
+    @Override
+    public void warmUpDevices(final int publishTelemetryPause) throws InterruptedException {
+        restClient.login(username, password);
+        log.info("Warming up {} devices...", deviceCount);
+        CountDownLatch connectLatch = new CountDownLatch(deviceCount);
+        AtomicInteger totalWarmedUpCount = new AtomicInteger();
+
+        int halfSize = deviceCount / 2;
+        int idx = 0;
+        for (Map.Entry<String, SubscriptionData> entry : deviceMap.entrySet()) {
+            String token = entry.getKey();
+            if (idx < halfSize) {
+                final int delayPause = (int) ((double) publishTelemetryPause / halfSize * idx);
+                warmUpExecutor.schedule(() -> {
+                    try {
+                        MqttClient client = initClient(token);
+                        mqttClientsMap.putIfAbsent(token, client);
+                    } catch (Exception e) {
+                        log.error("Error while connect device", e);
+                    } finally {
+                        connectLatch.countDown();
+                    }
+                }, delayPause, TimeUnit.MILLISECONDS);
+            } else {
+                httpExecutor.submit(() -> {
+                    try {
+                        restClient.getRestTemplate()
+                                .postForEntity(restUrl + "/api/v1/{token}/telemetry",
+                                        MAPPER.readTree(generateStrData()), ResponseEntity.class, token);
+                    } catch (Exception e) {
+                        log.error("Error while warming up device, token: {}", token, e);
+                    } finally {
+                        connectLatch.countDown();
+                        totalWarmedUpCount.getAndIncrement();
+                    }
+                });
+            }
+            idx++;
+        }
+        connectLatch.await();
+
+        CountDownLatch warmUpLatch = new CountDownLatch(mqttClientsMap.size());
+        idx = 0;
+        for (MqttClient mqttClient : mqttClientsMap.values()) {
+            final int delayPause = (int) ((double) publishTelemetryPause / mqttClientsMap.size() * idx);
+            idx++;
+            warmUpExecutor.schedule(() -> {
+                mqttClient.publish("v1/devices/me/telemetry", Unpooled.wrappedBuffer(generateByteData()), MqttQoS.AT_LEAST_ONCE)
+                        .addListener(future -> {
+                                    if (future.isSuccess()) {
+                                        log.debug("Message was successfully published to device: {}", mqttClient.getClientConfig().getUsername());
+                                    } else {
+                                        log.error("Error while publishing message to device: {}", mqttClient.getClientConfig().getUsername());
+                                    }
+                                    warmUpLatch.countDown();
+                                    totalWarmedUpCount.getAndIncrement();
+                                }
+                        );
+            }, delayPause, TimeUnit.MILLISECONDS);
+        }
+        warmUpLatch.await();
+    }
+
+    @Override
+    public void runApiTests(final int publishTelemetryPause) throws InterruptedException {
+        restClient.login(username, password);
+        log.info("Starting TB status check test for {} devices...", deviceCount);
+        AtomicInteger successPublishedCount = new AtomicInteger();
+        AtomicInteger failedPublishedCount = new AtomicInteger();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        scheduledExecutor.scheduleAtFixedRate(() -> {
+            try {
+                log.info("[{}] messages have been published successfully. [{}] failed.",
+                        successPublishedCount.get(), failedPublishedCount.get());
+            } catch (Exception ignored) {
+            }
+        }, 0, PUBLISHED_MESSAGES_LOG_PAUSE, TimeUnit.SECONDS);
+
+        int halfSize = deviceCount / 2;
+        int idx = 0;
+        while (true) {
+            for (Map.Entry<String, SubscriptionData> entry : deviceMap.entrySet()) {
+                if (idx < halfSize) {
+                    MqttClient mqttClient = mqttClientsMap.get(entry.getKey());
+                    int subscriptionId = entry.getValue().getSubscriptionId();
+                    if (subscriptionsMap.containsKey(subscriptionId)) {
+                        TbCheckTask task = subscriptionsMap.get(subscriptionId);
+                        if (task.isDone()) {
+                            publishMqttMessage(successPublishedCount, failedPublishedCount, mqttClient,
+                                    subscriptionId);
+                        }
+                    } else {
+                        publishMqttMessage(successPublishedCount, failedPublishedCount, mqttClient,
+                                subscriptionId);
+                    }
+                } else {
+                    String token = entry.getKey();
+                    String url = restUrl + "/api/v1/" + token + "/telemetry";
+                    HttpEntity<String> entity = new HttpEntity<>(generateStrData(), headers);
+                    int subscriptionId = entry.getValue().getSubscriptionId();
+                    if (subscriptionsMap.containsKey(subscriptionId)) {
+                        TbCheckTask task = subscriptionsMap.get(subscriptionId);
+                        if (task.isDone()) {
+                            publishHttpMessage(successPublishedCount, failedPublishedCount, token,
+                                    url, entity, subscriptionId);
+                        }
+                    } else {
+                        publishHttpMessage(successPublishedCount, failedPublishedCount, token,
+                                url, entity, subscriptionId);
+                    }
+                }
+                idx++;
+            }
+            try {
+                Thread.sleep(publishTelemetryPause);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     private void subscribeToWebSocket(DeviceId deviceId, int cmdId) {
-        ObjectNode objectNode = mapper.createObjectNode();
+        ObjectNode objectNode = MAPPER.createObjectNode();
         objectNode.put("entityType", "DEVICE");
         objectNode.put("entityId", deviceId.toString());
         objectNode.put("scope", "LATEST_TELEMETRY");
         objectNode.put("cmdId", Integer.toString(cmdId));
 
-        ArrayNode arrayNode = mapper.createArrayNode();
+        ArrayNode arrayNode = MAPPER.createArrayNode();
         arrayNode.add(objectNode);
 
-        ObjectNode resultNode = mapper.createObjectNode();
+        ObjectNode resultNode = MAPPER.createObjectNode();
         resultNode.set("tsSubCmds", arrayNode);
         try {
-            clientEndPoint.sendMessage(mapper.writeValueAsString(resultNode));
+            clientEndPoint.sendMessage(MAPPER.writeValueAsString(resultNode));
         } catch (Exception e) {
             log.error("Failed to send the message using WebSocket", e);
         }
     }
 
-    byte[] generateByteData() {
+    private MqttClient initClient(String token) throws Exception {
+        MqttClientConfig config = new MqttClientConfig();
+        config.setUsername(token);
+        MqttClient client = MqttClient.create(config, null);
+        client.setEventLoop(eventLoopGroup);
+        Future<MqttConnectResult> connectFuture = client.connect(mqttHost, mqttPort);
+        MqttConnectResult result;
+        try {
+            result = connectFuture.get(CONNECT_TIMEOUT, TimeUnit.SECONDS);
+        } catch (TimeoutException ex) {
+            connectFuture.cancel(true);
+            client.disconnect();
+            throw new RuntimeException(String.format("Failed to connect to MQTT broker at %s:%d.", mqttHost, mqttPort));
+        }
+        if (!result.isSuccess()) {
+            connectFuture.cancel(true);
+            client.disconnect();
+            throw new RuntimeException(String.format("Failed to connect to MQTT broker at %s:%d. Result code is: %s", mqttHost, mqttPort, result.getReturnCode()));
+        }
+        return client;
+    }
+
+    private void publishMqttMessage(AtomicInteger successPublishedCount, AtomicInteger failedPublishedCount,
+                                    MqttClient mqttClient, int subscriptionId) {
+        subscriptionsMap.put(subscriptionId, new TbCheckTask(getCurrentTs(), false, "MQTT"));
+        log.debug("Sending message via MQTT protocol...");
+        try {
+            mqttClient.publish("v1/devices/me/telemetry", Unpooled.wrappedBuffer(generateByteData()), MqttQoS.AT_LEAST_ONCE)
+                    .addListener(future -> {
+                                if (future.isSuccess()) {
+                                    successPublishedCount.getAndIncrement();
+                                    log.debug("Message was successfully published to device: {}", mqttClient.getClientConfig().getUsername());
+                                } else {
+                                    failedPublishedCount.getAndIncrement();
+                                    log.error("Error while publishing message to device: {}", mqttClient.getClientConfig().getUsername());
+                                }
+                            }
+                    );
+        } catch (Exception e) {
+            failedPublishedCount.getAndIncrement();
+        }
+    }
+
+    private void publishHttpMessage(AtomicInteger successPublishedCount, AtomicInteger failedPublishedCount,
+                                    String token, String url, HttpEntity<String> entity, int subscriptionId) {
+        log.debug("Sending message via HTTP protocol...");
+        subscriptionsMap.put(subscriptionId, new TbCheckTask(getCurrentTs(), false, "HTTP"));
+
+        ListenableFuture<ResponseEntity<Void>> future = httpClient.exchange(url, HttpMethod.POST, entity, Void.class);
+        future.addCallback(new ListenableFutureCallback<ResponseEntity>() {
+            @Override
+            public void onFailure(Throwable throwable) {
+                failedPublishedCount.getAndIncrement();
+                log.error("Error while publishing telemetry, token: {}", token, throwable);
+            }
+
+            @Override
+            public void onSuccess(ResponseEntity responseEntity) {
+                if (responseEntity.getStatusCode().is2xxSuccessful()) {
+                    successPublishedCount.getAndIncrement();
+                } else {
+                    failedPublishedCount.getAndIncrement();
+                    log.error("Error while publishing telemetry, token: {}, status code: {}", token, responseEntity.getStatusCode().getReasonPhrase());
+                }
+            }
+        });
+    }
+
+    private byte[] generateByteData() {
         return generateStrData().getBytes(StandardCharsets.UTF_8);
     }
 
-    String generateStrData() {
-        ObjectNode node = mapper.createObjectNode().put("temperature", getRandomValue(MIN_NUMB, MAX_NUMB));
+    private String generateStrData() {
+        ObjectNode node = MAPPER.createObjectNode().put("temperature", getRandomValue(MIN_NUMB, MAX_NUMB));
         try {
-            return mapper.writeValueAsString(node);
+            return MAPPER.writeValueAsString(node);
         } catch (JsonProcessingException e) {
-            log.warn("Failed to write JSON as String [{}]", node);
+            log.warn("Failed to write JSON as String [{}]", node, e);
         }
         return "{\"temperature\":30}";
     }
@@ -209,7 +429,7 @@ public abstract class BaseDeviceAPITest implements DeviceAPITest {
         return (int) (Math.random() * ((max - min) + 1)) + min;
     }
 
-    long getCurrentTs() {
+    private long getCurrentTs() {
         return System.currentTimeMillis();
     }
 
@@ -217,14 +437,18 @@ public abstract class BaseDeviceAPITest implements DeviceAPITest {
         clientEndPoint.addMessageHandler(message -> {
             log.info("Arrived message via WebSocket: {}", message);
             try {
-                int subscriptionId = mapper.readTree(message).get("subscriptionId").asInt();
+                int subscriptionId = MAPPER.readTree(message).get("subscriptionId").asInt();
                 if (subscriptionsMap.containsKey(subscriptionId)) {
                     TbCheckTask task = subscriptionsMap.get(subscriptionId);
                     task.setDone(true);
-                    sendEmail = getCurrentTs() - task.getStartTs() > duration;
+                    boolean sendEmail = getCurrentTs() - task.getStartTs() > duration;
+                    sendEmailData.setSendEmail(sendEmail);
+                    if (sendEmail) {
+                        sendEmailData.setMessage("Troubles with processing [" + task.getProtocol() + "] messages...");
+                    }
                 }
             } catch (IOException e) {
-                log.warn("Failed to read message to json {}", message);
+                log.warn("Failed to read message to json {}", message, e);
             }
         });
     }
@@ -232,23 +456,24 @@ public abstract class BaseDeviceAPITest implements DeviceAPITest {
     private void scheduleAlertEmailSending() {
         scheduledExecutor.scheduleAtFixedRate(() -> {
             try {
-                if (sendEmail) {
+                if (sendEmailData.isSendEmail()) {
                     log.info("Sending an email in case of any troubles with the TB!");
-                    emailService.sendAlertEmail();
-                    sendEmail = false;
+                    emailService.sendAlertEmail(sendEmailData.getMessage());
+                    sendEmailData.setSendEmail(false);
                 }
             } catch (Exception ignored) {
             }
-        }, 0, alertEmailsPeriod, TimeUnit.MINUTES);
+        }, 3, alertEmailsPeriod, TimeUnit.MINUTES);
     }
 
     private void scheduleScriptStatusEmailSending() {
         scheduledExecutor.scheduleAtFixedRate(() -> {
             try {
+                log.info("Sending an email that the monitoring script is running fine!");
                 emailService.sendStatusEmail();
             } catch (Exception ignored) {
             }
-        }, 1, statusEmailPeriod, TimeUnit.MINUTES);
+        }, 5, statusEmailPeriod, TimeUnit.MINUTES);
     }
 
     private void scheduleTasksCheck() {
@@ -257,7 +482,8 @@ public abstract class BaseDeviceAPITest implements DeviceAPITest {
                 TbCheckTask task = entry.getValue();
                 if (!task.isDone() && getCurrentTs() - task.getStartTs() > duration) {
                     task.setDone(true);
-                    sendEmail = true;
+                    sendEmailData.setSendEmail(true);
+                    sendEmailData.setMessage("Troubles with processing [" + task.getProtocol() + "] messages...");
                 }
             }
         }, 0, TASKS_CHECK_PAUSE, TimeUnit.SECONDS);

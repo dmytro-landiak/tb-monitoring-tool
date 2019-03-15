@@ -78,11 +78,12 @@ public class EmailService {
         });
     }
 
-    public void sendAlertEmail() {
+    public void sendAlertEmail(String message) {
         try {
-            Transport.send(createMessage(alertEmails, "TB Status [" + restUrl + "]", "TB is currently down or in bad conditions!"));
+            Transport.send(createMessage(alertEmails, "TB Status [" + restUrl + "]", "TB is currently down or " +
+                    "in bad conditions!" + "\n" + message));
         } catch (MessagingException e) {
-            log.warn("Failed to send the mail about TB conditions!");
+            log.warn("Failed to send the mail about TB conditions!", e);
             throw new RuntimeException(e);
         }
     }
@@ -91,7 +92,7 @@ public class EmailService {
         try {
             Transport.send(createMessage(statusEmail, "TB Script Status [" + restUrl + "]", "Script is working well!"));
         } catch (MessagingException e) {
-            log.warn("Failed to send the mail about script status!");
+            log.warn("Failed to send the mail about script status!", e);
             throw new RuntimeException(e);
         }
     }

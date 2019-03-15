@@ -17,13 +17,14 @@ package org.thingsboard.tools.service.device;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 @Data
 @AllArgsConstructor
-class TbCheckTask {
+@NoArgsConstructor
+class SendEmailData {
 
-    private long startTs;
-    private boolean isDone;
-    private String protocol;
+    private boolean sendEmail;
+    private String message;
 
 }
