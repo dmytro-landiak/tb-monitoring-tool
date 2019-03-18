@@ -108,12 +108,11 @@ public class BaseDeviceAPITest implements DeviceAPITest {
     private int statusEmailPeriod;
 
     private final ScheduledExecutorService warmUpExecutor = Executors.newScheduledThreadPool(10);
-    private final ExecutorService httpExecutor = Executors.newFixedThreadPool(10);
     private final ScheduledExecutorService scheduledExecutor = Executors.newScheduledThreadPool(10);
+    private final ExecutorService httpExecutor = Executors.newFixedThreadPool(10);
 
     private final Map<Integer, TbCheckTask> subscriptionsMap = new ConcurrentHashMap<>();
-    private final Map<String, SubscriptionData> deviceMap = new ConcurrentHashMap<>();
-    private final Map<String, MqttClient> mqttClientsMap = new ConcurrentHashMap<>();
+    private final Map<String, MonitoringDeviceData> deviceMap = new ConcurrentHashMap<>();
 
     private final SendEmailData sendEmailData = new SendEmailData();
 
@@ -144,8 +143,8 @@ public class BaseDeviceAPITest implements DeviceAPITest {
 
     @PreDestroy
     void destroy() {
-        for (MqttClient mqttClient : mqttClientsMap.values()) {
-            mqttClient.disconnect();
+        for (MonitoringDeviceData monitoringDeviceData : deviceMap.values()) {
+            monitoringDeviceData.getMqttClient().disconnect();
         }
         if (!this.httpExecutor.isShutdown()) {
             this.httpExecutor.shutdown();
@@ -166,16 +165,14 @@ public class BaseDeviceAPITest implements DeviceAPITest {
         restClient.login(username, password);
         log.info("Creating {} devices...", deviceCount);
         CountDownLatch latch = new CountDownLatch(deviceCount);
-        AtomicInteger count = new AtomicInteger();
         for (int i = 0; i < deviceCount; i++) {
             httpExecutor.submit(() -> {
                 Device device = null;
                 try {
                     device = restClient.createDevice("Device_" + RandomStringUtils.randomNumeric(5), "default");
-                    SubscriptionData data = new SubscriptionData();
+                    MonitoringDeviceData data = new MonitoringDeviceData();
                     data.setDeviceId(device.getId());
                     deviceMap.putIfAbsent(restClient.getCredentials(device.getId()).getCredentialsId(), data);
-                    count.getAndIncrement();
                 } catch (Exception e) {
                     log.error("Error while creating device", e);
                     if (device != null && device.getId() != null) {
@@ -192,9 +189,10 @@ public class BaseDeviceAPITest implements DeviceAPITest {
 
     @Override
     public void subscribeWebSockets() {
+        log.info("Subscribing WebSockets for {} devices...", deviceCount);
         int cmdId = 1;
-        for (Map.Entry<String, SubscriptionData> entry : deviceMap.entrySet()) {
-            SubscriptionData data = entry.getValue();
+        for (Map.Entry<String, MonitoringDeviceData> entry : deviceMap.entrySet()) {
+            MonitoringDeviceData data = entry.getValue();
             subscribeToWebSocket(data.getDeviceId(), cmdId);
             data.setSubscriptionId(cmdId);
             cmdId++;
@@ -206,46 +204,30 @@ public class BaseDeviceAPITest implements DeviceAPITest {
         restClient.login(username, password);
         log.info("Warming up {} devices...", deviceCount);
         CountDownLatch connectLatch = new CountDownLatch(deviceCount);
-        AtomicInteger totalWarmedUpCount = new AtomicInteger();
 
-        int halfSize = deviceCount / 2;
         int idx = 0;
-        for (Map.Entry<String, SubscriptionData> entry : deviceMap.entrySet()) {
-            String token = entry.getKey();
-            if (idx < halfSize) {
-                final int delayPause = (int) ((double) publishTelemetryPause / halfSize * idx);
-                warmUpExecutor.schedule(() -> {
-                    try {
-                        MqttClient client = initClient(token);
-                        mqttClientsMap.putIfAbsent(token, client);
-                    } catch (Exception e) {
-                        log.error("Error while connect device", e);
-                    } finally {
-                        connectLatch.countDown();
-                    }
-                }, delayPause, TimeUnit.MILLISECONDS);
-            } else {
-                httpExecutor.submit(() -> {
-                    try {
-                        restClient.getRestTemplate()
-                                .postForEntity(restUrl + "/api/v1/{token}/telemetry",
-                                        MAPPER.readTree(generateStrData()), ResponseEntity.class, token);
-                    } catch (Exception e) {
-                        log.error("Error while warming up device, token: {}", token, e);
-                    } finally {
-                        connectLatch.countDown();
-                        totalWarmedUpCount.getAndIncrement();
-                    }
-                });
-            }
+        for (Map.Entry<String, MonitoringDeviceData> entry : deviceMap.entrySet()) {
+            final int delayPause = (int) ((double) publishTelemetryPause / deviceCount * idx);
             idx++;
+            warmUpExecutor.schedule(() -> {
+                try {
+                    MqttClient client = initClient(entry.getKey());
+                    MonitoringDeviceData monitoringDeviceData = entry.getValue();
+                    monitoringDeviceData.setMqttClient(client);
+                } catch (Exception e) {
+                    log.error("Error while connect device", e);
+                } finally {
+                    connectLatch.countDown();
+                }
+            }, delayPause, TimeUnit.MILLISECONDS);
         }
         connectLatch.await();
 
-        CountDownLatch warmUpLatch = new CountDownLatch(mqttClientsMap.size());
+        CountDownLatch warmUpLatch = new CountDownLatch(deviceMap.size());
         idx = 0;
-        for (MqttClient mqttClient : mqttClientsMap.values()) {
-            final int delayPause = (int) ((double) publishTelemetryPause / mqttClientsMap.size() * idx);
+        for (MonitoringDeviceData monitoringDeviceData : deviceMap.values()) {
+            MqttClient mqttClient = monitoringDeviceData.getMqttClient();
+            final int delayPause = (int) ((double) publishTelemetryPause / deviceMap.size() * idx);
             idx++;
             warmUpExecutor.schedule(() -> {
                 mqttClient.publish("v1/devices/me/telemetry", Unpooled.wrappedBuffer(generateByteData()), MqttQoS.AT_LEAST_ONCE)
@@ -256,12 +238,12 @@ public class BaseDeviceAPITest implements DeviceAPITest {
                                         log.error("Error while publishing message to device: {}", mqttClient.getClientConfig().getUsername());
                                     }
                                     warmUpLatch.countDown();
-                                    totalWarmedUpCount.getAndIncrement();
                                 }
                         );
             }, delayPause, TimeUnit.MILLISECONDS);
         }
         warmUpLatch.await();
+        log.info("Warming up ended for {} devices...", deviceCount);
     }
 
     @Override
@@ -282,45 +264,9 @@ public class BaseDeviceAPITest implements DeviceAPITest {
             }
         }, 0, PUBLISHED_MESSAGES_LOG_PAUSE, TimeUnit.SECONDS);
 
-        int halfSize = deviceCount / 2;
-        int idx = 0;
         while (true) {
-            for (Map.Entry<String, SubscriptionData> entry : deviceMap.entrySet()) {
-                if (idx < halfSize) {
-                    MqttClient mqttClient = mqttClientsMap.get(entry.getKey());
-                    int subscriptionId = entry.getValue().getSubscriptionId();
-                    if (subscriptionsMap.containsKey(subscriptionId)) {
-                        TbCheckTask task = subscriptionsMap.get(subscriptionId);
-                        if (task.isDone()) {
-                            publishMqttMessage(successPublishedCount, failedPublishedCount, mqttClient,
-                                    subscriptionId);
-                        }
-                    } else {
-                        publishMqttMessage(successPublishedCount, failedPublishedCount, mqttClient,
-                                subscriptionId);
-                    }
-                } else {
-                    String token = entry.getKey();
-                    String url = restUrl + "/api/v1/" + token + "/telemetry";
-                    HttpEntity<String> entity = new HttpEntity<>(generateStrData(), headers);
-                    int subscriptionId = entry.getValue().getSubscriptionId();
-                    if (subscriptionsMap.containsKey(subscriptionId)) {
-                        TbCheckTask task = subscriptionsMap.get(subscriptionId);
-                        if (task.isDone()) {
-                            publishHttpMessage(successPublishedCount, failedPublishedCount, token,
-                                    url, entity, subscriptionId);
-                        }
-                    } else {
-                        publishHttpMessage(successPublishedCount, failedPublishedCount, token,
-                                url, entity, subscriptionId);
-                    }
-                }
-                idx++;
-            }
-            try {
-                Thread.sleep(publishTelemetryPause);
-            } catch (Exception ignored) {
-            }
+            processPublishMqttMessages(publishTelemetryPause, successPublishedCount, failedPublishedCount);
+            processPublishHttpMessages(publishTelemetryPause, successPublishedCount, failedPublishedCount, headers);
         }
     }
 
@@ -363,6 +309,45 @@ public class BaseDeviceAPITest implements DeviceAPITest {
             throw new RuntimeException(String.format("Failed to connect to MQTT broker at %s:%d. Result code is: %s", mqttHost, mqttPort, result.getReturnCode()));
         }
         return client;
+    }
+
+    private void processPublishMqttMessages(int publishTelemetryPause, AtomicInteger successPublishedCount, AtomicInteger failedPublishedCount) {
+        for (Map.Entry<String, MonitoringDeviceData> entry : deviceMap.entrySet()) {
+            MonitoringDeviceData monitoringDeviceData = entry.getValue();
+            MqttClient mqttClient = monitoringDeviceData.getMqttClient();
+            int subscriptionId = monitoringDeviceData.getSubscriptionId();
+            if (subscriptionsMap.containsKey(subscriptionId)) {
+                TbCheckTask task = subscriptionsMap.get(subscriptionId);
+                if (task.isDone()) {
+                    publishMqttMessage(successPublishedCount, failedPublishedCount, mqttClient,
+                            subscriptionId);
+                }
+            } else {
+                publishMqttMessage(successPublishedCount, failedPublishedCount, mqttClient,
+                        subscriptionId);
+            }
+        }
+        sleep(publishTelemetryPause);
+    }
+
+    private void processPublishHttpMessages(int publishTelemetryPause, AtomicInteger successPublishedCount, AtomicInteger failedPublishedCount, HttpHeaders headers) {
+        for (Map.Entry<String, MonitoringDeviceData> entry : deviceMap.entrySet()) {
+            String token = entry.getKey();
+            String url = restUrl + "/api/v1/" + token + "/telemetry";
+            HttpEntity<String> entity = new HttpEntity<>(generateStrData(), headers);
+            int subscriptionId = entry.getValue().getSubscriptionId();
+            if (subscriptionsMap.containsKey(subscriptionId)) {
+                TbCheckTask task = subscriptionsMap.get(subscriptionId);
+                if (task.isDone()) {
+                    publishHttpMessage(successPublishedCount, failedPublishedCount, token,
+                            url, entity, subscriptionId);
+                }
+            } else {
+                publishHttpMessage(successPublishedCount, failedPublishedCount, token,
+                        url, entity, subscriptionId);
+            }
+        }
+        sleep(publishTelemetryPause);
     }
 
     private void publishMqttMessage(AtomicInteger successPublishedCount, AtomicInteger failedPublishedCount,
@@ -431,6 +416,13 @@ public class BaseDeviceAPITest implements DeviceAPITest {
 
     private long getCurrentTs() {
         return System.currentTimeMillis();
+    }
+
+    private void sleep(int publishTelemetryPause) {
+        try {
+            Thread.sleep(publishTelemetryPause);
+        } catch (Exception ignored) {
+        }
     }
 
     private void handleWebSocketMsg() {

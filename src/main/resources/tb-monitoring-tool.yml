@@ -29,7 +29,7 @@ mqtt:
   host: "${MQTT_HOST:localhost}"
   port: "${MQTT_PORT:1883}"
 device:
-  count: "${DEVICE_COUNT:4}"
+  count: "${DEVICE_COUNT:3}"
 publish:
   pause: "${PUBLISH_PAUSE:5000}" # in milliseconds
 performance:
@@ -47,4 +47,3 @@ email:
     port: "${EMAIL_SMTP_PORT:587}"
     username: "${EMAIL_SMTP_USERNAME:smtp_username0@gmail.com}"
     password: "${EMAIL_SMTP_PASSWORD:smtp_password}"
-
