@@ -114,12 +114,11 @@ public class BaseDeviceAPITest implements DeviceAPITest {
     private final Map<Integer, TbCheckTask> subscriptionsMap = new ConcurrentHashMap<>();
     private final Map<String, MonitoringDeviceData> deviceMap = new ConcurrentHashMap<>();
 
-    private final SendEmailData sendEmailData = new SendEmailData();
-
     private RestClient restClient;
     private WebSocketClientEndpoint clientEndPoint;
     private EventLoopGroup eventLoopGroup;
     private AsyncRestTemplate httpClient;
+    private boolean sendEmail;
 
     @PostConstruct
     void init() {
@@ -433,11 +432,7 @@ public class BaseDeviceAPITest implements DeviceAPITest {
                 if (subscriptionsMap.containsKey(subscriptionId)) {
                     TbCheckTask task = subscriptionsMap.get(subscriptionId);
                     task.setDone(true);
-                    boolean sendEmail = getCurrentTs() - task.getStartTs() > duration;
-                    sendEmailData.setSendEmail(sendEmail);
-                    if (sendEmail) {
-                        sendEmailData.setMessage("Troubles with processing [" + task.getProtocol() + "] messages...");
-                    }
+                    sendEmail = getCurrentTs() - task.getStartTs() > duration;
                 }
             } catch (IOException e) {
                 log.warn("Failed to read message to json {}", message, e);
@@ -448,10 +443,10 @@ public class BaseDeviceAPITest implements DeviceAPITest {
     private void scheduleAlertEmailSending() {
         scheduledExecutor.scheduleAtFixedRate(() -> {
             try {
-                if (sendEmailData.isSendEmail()) {
+                if (sendEmail) {
                     log.info("Sending an email in case of any troubles with the TB!");
-                    emailService.sendAlertEmail(sendEmailData.getMessage());
-                    sendEmailData.setSendEmail(false);
+                    emailService.sendAlertEmail();
+                    sendEmail = false;
                 }
             } catch (Exception ignored) {
             }
@@ -474,8 +469,7 @@ public class BaseDeviceAPITest implements DeviceAPITest {
                 TbCheckTask task = entry.getValue();
                 if (!task.isDone() && getCurrentTs() - task.getStartTs() > duration) {
                     task.setDone(true);
-                    sendEmailData.setSendEmail(true);
-                    sendEmailData.setMessage("Troubles with processing [" + task.getProtocol() + "] messages...");
+                    sendEmail = true;
                 }
             }
         }, 0, TASKS_CHECK_PAUSE, TimeUnit.SECONDS);

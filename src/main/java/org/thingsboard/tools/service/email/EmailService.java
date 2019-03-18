@@ -78,10 +78,10 @@ public class EmailService {
         });
     }
 
-    public void sendAlertEmail(String message) {
+    public void sendAlertEmail() {
         try {
             Transport.send(createMessage(alertEmails, "TB Status [" + restUrl + "]", "TB is currently down or " +
-                    "in bad conditions!" + "\n" + message));
+                    "in bad conditions!"));
         } catch (MessagingException e) {
             log.warn("Failed to send the mail about TB conditions!", e);
             throw new RuntimeException(e);
