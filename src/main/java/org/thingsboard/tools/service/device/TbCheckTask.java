@@ -24,6 +24,5 @@ class TbCheckTask {
 
     private long startTs;
     private boolean isDone;
-    private String protocol;
 
 }

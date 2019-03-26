@@ -351,7 +351,7 @@ public class BaseDeviceAPITest implements DeviceAPITest {
 
     private void publishMqttMessage(AtomicInteger successPublishedCount, AtomicInteger failedPublishedCount,
                                     MqttClient mqttClient, int subscriptionId) {
-        subscriptionsMap.put(subscriptionId, new TbCheckTask(getCurrentTs(), false, "MQTT"));
+        subscriptionsMap.put(subscriptionId, new TbCheckTask(getCurrentTs(), false));
         log.debug("Sending message via MQTT protocol...");
         try {
             mqttClient.publish("v1/devices/me/telemetry", Unpooled.wrappedBuffer(generateByteData()), MqttQoS.AT_LEAST_ONCE)
@@ -373,7 +373,7 @@ public class BaseDeviceAPITest implements DeviceAPITest {
     private void publishHttpMessage(AtomicInteger successPublishedCount, AtomicInteger failedPublishedCount,
                                     String token, String url, HttpEntity<String> entity, int subscriptionId) {
         log.debug("Sending message via HTTP protocol...");
-        subscriptionsMap.put(subscriptionId, new TbCheckTask(getCurrentTs(), false, "HTTP"));
+        subscriptionsMap.put(subscriptionId, new TbCheckTask(getCurrentTs(), false));
 
         ListenableFuture<ResponseEntity<Void>> future = httpClient.exchange(url, HttpMethod.POST, entity, Void.class);
         future.addCallback(new ListenableFutureCallback<ResponseEntity>() {
