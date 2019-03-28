@@ -27,24 +27,4 @@ RUN update-rc.d ${pkg.name} disable
 
 RUN mv /tmp/${pkg.name}.conf ${pkg.installFolder}/conf
 
-ENV REST_URL=localhost:9090
-ENV REST_WEB_SOCKET_URL=ws://localhost:9090/api/ws/plugins/telemetry?token
-ENV REST_USERNAME=tenant@thingsboard.org
-ENV REST_PASSWORD=tenant
-
-ENV MQTT_HOST=localhost
-ENV MQTT_PORT=1883
-
-ENV DEVICE_API=HTTP
-ENV DEVICE_COUNT=3
-
-ENV PUBLISH_PAUSE=5000
-
-ENV PERFORMANCE_DURATION=3000
-
-ENV EMAIL_ALERT_EMAILS=dshvaika@thingsboard.io,dlandiak@thingsboard.io
-ENV EMAIL_ALERT_PERIOD=60
-ENV EMAIL_STATUS_EMAIL=dlandiak@thingsboard.io
-ENV EMAIL_STATUS_PERIOD=360
-
 CMD ["start-tests.sh"]

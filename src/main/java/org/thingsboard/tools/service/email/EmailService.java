@@ -37,11 +37,11 @@ public class EmailService {
     @Value("${rest.url}")
     private String restUrl;
 
-    @Value("${email.alertEmails}")
-    private String alertEmails;
+    @Value("${email.tbStatusEmails}")
+    private String tbStatusEmails;
 
-    @Value("${email.statusEmail}")
-    private String statusEmail;
+    @Value("${email.scriptStatusEmails}")
+    private String scriptStatusEmails;
 
     @Value("${email.smtp.starttls.enable}")
     private Boolean smtpStartTlsEnable;
@@ -80,8 +80,8 @@ public class EmailService {
 
     public void sendAlertEmail() {
         try {
-            Transport.send(createMessage(alertEmails, "TB Status [" + restUrl + "]", "TB is currently down or " +
-                    "in bad conditions!"));
+            Transport.send(createMessage(tbStatusEmails, "ThingsBoard Status [" + restUrl + "]",
+                    "ThingsBoard is currently down or in bad conditions!"));
         } catch (MessagingException e) {
             log.warn("Failed to send the mail about TB conditions!", e);
             throw new RuntimeException(e);
@@ -90,9 +90,20 @@ public class EmailService {
 
     public void sendStatusEmail() {
         try {
-            Transport.send(createMessage(statusEmail, "TB Script Status [" + restUrl + "]", "Script is working well!"));
+            Transport.send(createMessage(scriptStatusEmails, "ThingsBoard Script Status [" + restUrl + "]",
+                    "Script is working well!"));
         } catch (MessagingException e) {
             log.warn("Failed to send the mail about script status!", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void sendRestoringEmail() {
+        try {
+            Transport.send(createMessage(tbStatusEmails, "ThingsBoard Status [" + restUrl + "]",
+                    "ThingsBoard has restored its work!"));
+        } catch (MessagingException e) {
+            log.warn("Failed to send the mail about TB conditions!", e);
             throw new RuntimeException(e);
         }
     }

@@ -47,6 +47,7 @@ public class WebSocketClientEndpoint {
     @OnClose
     public void onClose() {
         this.userSession = null;
+        this.messageHandler = null;
     }
 
     @OnMessage

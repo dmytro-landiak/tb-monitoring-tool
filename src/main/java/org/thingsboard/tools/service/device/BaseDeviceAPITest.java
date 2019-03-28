@@ -59,6 +59,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -68,9 +69,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class BaseDeviceAPITest implements DeviceAPITest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int CONNECT_TIMEOUT = 5;
-    private static final int PUBLISHED_MESSAGES_LOG_PAUSE = 5;
-    private static final int TASKS_CHECK_PAUSE = 60;
+    private static final int TIMEOUT = 5;
+    private static final int CHECK_PAUSE = 60;
     private static final int MIN_NUMB = 0;
     private static final int MAX_NUMB = 50;
 
@@ -101,11 +101,11 @@ public class BaseDeviceAPITest implements DeviceAPITest {
     @Value("${performance.duration}")
     private int duration;
 
-    @Value("${email.alertEmailsPeriod}")
-    private int alertEmailsPeriod;
+    @Value("${email.tbStatusEmailsPeriod}")
+    private int tbStatusEmailsPeriod;
 
-    @Value("${email.statusEmailPeriod}")
-    private int statusEmailPeriod;
+    @Value("${email.scriptStatusEmailsPeriod}")
+    private int scriptStatusEmailsPeriod;
 
     private final ScheduledExecutorService warmUpExecutor = Executors.newScheduledThreadPool(10);
     private final ScheduledExecutorService scheduledExecutor = Executors.newScheduledThreadPool(10);
@@ -118,7 +118,8 @@ public class BaseDeviceAPITest implements DeviceAPITest {
     private WebSocketClientEndpoint clientEndPoint;
     private EventLoopGroup eventLoopGroup;
     private AsyncRestTemplate httpClient;
-    private boolean sendEmail;
+    private ScheduledFuture<?> scheduledAlertSendingFuture;
+    private ScheduledFuture<?> scheduledSubscriptionFuture;
 
     @PostConstruct
     void init() {
@@ -135,7 +136,6 @@ public class BaseDeviceAPITest implements DeviceAPITest {
         } catch (URISyntaxException e) {
             log.error("Bad URI provided...", e);
         }
-        scheduleAlertEmailSending();
         scheduleScriptStatusEmailSending();
         scheduleTasksCheck();
     }
@@ -261,7 +261,7 @@ public class BaseDeviceAPITest implements DeviceAPITest {
                         successPublishedCount.get(), failedPublishedCount.get());
             } catch (Exception ignored) {
             }
-        }, 0, PUBLISHED_MESSAGES_LOG_PAUSE, TimeUnit.SECONDS);
+        }, 0, TIMEOUT, TimeUnit.SECONDS);
 
         while (true) {
             processPublishMqttMessages(publishTelemetryPause, successPublishedCount, failedPublishedCount);
@@ -296,7 +296,7 @@ public class BaseDeviceAPITest implements DeviceAPITest {
         Future<MqttConnectResult> connectFuture = client.connect(mqttHost, mqttPort);
         MqttConnectResult result;
         try {
-            result = connectFuture.get(CONNECT_TIMEOUT, TimeUnit.SECONDS);
+            result = connectFuture.get(TIMEOUT, TimeUnit.SECONDS);
         } catch (TimeoutException ex) {
             connectFuture.cancel(true);
             client.disconnect();
@@ -432,25 +432,28 @@ public class BaseDeviceAPITest implements DeviceAPITest {
                 if (subscriptionsMap.containsKey(subscriptionId)) {
                     TbCheckTask task = subscriptionsMap.get(subscriptionId);
                     task.setDone(true);
-                    sendEmail = getCurrentTs() - task.getStartTs() > duration;
+                    if (getCurrentTs() - task.getStartTs() > duration) {
+                        scheduleAlertEmailSending();
+                    } else {
+                        if (scheduledSubscriptionFuture != null) {
+                            scheduledSubscriptionFuture.cancel(true);
+                            scheduledSubscriptionFuture = null;
+                        }
+                        if (scheduledAlertSendingFuture != null) {
+                            scheduledAlertSendingFuture.cancel(true);
+                            scheduledAlertSendingFuture = null;
+                            try {
+                                log.info("Sending an email that TB restored its work!");
+                                emailService.sendRestoringEmail();
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
                 }
             } catch (IOException e) {
                 log.warn("Failed to read message to json {}", message, e);
             }
         });
-    }
-
-    private void scheduleAlertEmailSending() {
-        scheduledExecutor.scheduleAtFixedRate(() -> {
-            try {
-                if (sendEmail) {
-                    log.info("Sending an email in case of any troubles with the TB!");
-                    emailService.sendAlertEmail();
-                    sendEmail = false;
-                }
-            } catch (Exception ignored) {
-            }
-        }, 3, alertEmailsPeriod, TimeUnit.MINUTES);
     }
 
     private void scheduleScriptStatusEmailSending() {
@@ -460,7 +463,7 @@ public class BaseDeviceAPITest implements DeviceAPITest {
                 emailService.sendStatusEmail();
             } catch (Exception ignored) {
             }
-        }, 5, statusEmailPeriod, TimeUnit.MINUTES);
+        }, 5, scriptStatusEmailsPeriod, TimeUnit.MINUTES);
     }
 
     private void scheduleTasksCheck() {
@@ -469,10 +472,38 @@ public class BaseDeviceAPITest implements DeviceAPITest {
                 TbCheckTask task = entry.getValue();
                 if (!task.isDone() && getCurrentTs() - task.getStartTs() > duration) {
                     task.setDone(true);
-                    sendEmail = true;
+                    scheduleAlertEmailSending();
+                    scheduleReSubscription();
                 }
             }
-        }, 0, TASKS_CHECK_PAUSE, TimeUnit.SECONDS);
+        }, 0, CHECK_PAUSE, TimeUnit.SECONDS);
+    }
+
+    private void scheduleAlertEmailSending() {
+        if (scheduledAlertSendingFuture == null) {
+            scheduledAlertSendingFuture = scheduledExecutor.scheduleAtFixedRate(() -> {
+                try {
+                    log.info("Sending an email in case of any troubles with the TB!");
+                    emailService.sendAlertEmail();
+                } catch (Exception ignored) {
+                }
+            }, 0, tbStatusEmailsPeriod, TimeUnit.MINUTES);
+        }
+    }
+
+    private void scheduleReSubscription() {
+        if (scheduledSubscriptionFuture == null) {
+            scheduledSubscriptionFuture = scheduledExecutor.scheduleAtFixedRate(() -> {
+                try {
+                    clientEndPoint.onClose();
+                    clientEndPoint = new WebSocketClientEndpoint(new URI(webSocketUrl + "=" + restClient.getToken()));
+                    handleWebSocketMsg();
+                    subscribeWebSockets();
+                } catch (Exception e) {
+                    log.error("Failed to connect to WebSocket endpoint...", e);
+                }
+            }, 0, CHECK_PAUSE, TimeUnit.SECONDS);
+        }
     }
 
 }
