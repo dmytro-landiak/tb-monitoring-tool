@@ -57,8 +57,8 @@ Where:
 - `DEVICE_COUNT`                          - Device count to which the messages will be sent
 - `PUBLISH_PAUSE`                         - Pause between messages for a single simulated device in milliseconds
 - `PERFORMANCE_DURATION`                  - Time for processing of a single message to determine whether the TB instance is working well in milliseconds
-- `EMAIL_TB_STATUS_EMAILS`                - Comma separated list of email addresses to send the TB status email
-- `EMAIL_TB_STATUS_EMAILS_PERIOD`         - Time between sending the alert emails (in minutes)
+- `EMAIL_TB_STATUS_EMAILS`                - Comma separated list of email addresses to send the TB status emails
+- `EMAIL_TB_STATUS_EMAILS_PERIOD`         - Time between sending the TB status (when TB is in bad conditions or down) emails (in minutes)
 - `EMAIL_SCRIPT_STATUS_EMAILS`            - Comma separated list of email addresses to send the status of the script email
 - `EMAIL_SCRIPT_STATUS_EMAILS_PERIOD`     - Time between sending the script status emails (in minutes)
 - `EMAIL_SMTP_USERNAME`                   - Email username from which to send the mails
