@@ -45,5 +45,5 @@ email:
     auth: "${EMAIL_SMTP_AUTH:true}"
     host: "${EMAIL_SMTP_HOST:smtp.gmail.com}"
     port: "${EMAIL_SMTP_PORT:587}"
-    username: "${EMAIL_SMTP_USERNAME:smtp_username0@gmail.com}"
+    username: "${EMAIL_SMTP_USERNAME:smtp_username@gmail.com}"
     password: "${EMAIL_SMTP_PASSWORD:smtp_password}"

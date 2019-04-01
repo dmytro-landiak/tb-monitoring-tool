@@ -1,7 +1,7 @@
 # thingsboard-env-monitoring-tool
 Thingsboard environment monitoring tool
 
-The project that is able to check the status of the Thingsboard environment by sending the messages to a specified number of devices and expect them to be processed within a given period of time.
+The project that is able to check the status of the Thingsboard environment by sending the messages (via MQTT and HTTP protocols) to a specified number of devices and expect them to be processed within a given period of time.
 
 ## Prerequisites
 
@@ -32,39 +32,37 @@ MQTT_HOST=IP_ADDRESS_OF_TB_INSTANCE
 # IP_ADDRESS_OF_TB_INSTANCE is your local IP address if you run ThingsBoard on your dev machine in docker
 MQTT_PORT=1883
 
-DEVICE_API=HTTP
 DEVICE_COUNT=3
 
 PUBLISH_PAUSE=5000
 
 PERFORMANCE_DURATION=3000
 
-EMAIL_ALERT_EMAILS=YOUR_EMAIL_ADDRESSES
-EMAIL_ALERT_PERIOD=60
-EMAIL_STATUS_EMAIL=YOUR_EMAIL_ADDRESSES
-EMAIL_STATUS_PERIOD=360
+EMAIL_TB_STATUS_EMAILS=YOUR_EMAIL_ADDRESSES
+EMAIL_TB_STATUS_EMAILS_PERIOD=60
+EMAIL_SCRIPT_STATUS_EMAILS=YOUR_EMAIL_ADDRESSES
+EMAIL_SCRIPT_STATUS_EMAILS_PERIOD=360
 EMAIL_SMTP_USERNAME=YOUR_USERNAME
 EMAIL_SMTP_PASSWORD=YOUR_PASSWORD
 ```
 
 Where: 
     
-- `REST_URL`                     - Rest URL of the TB instance
-- `REST_WEB_SOCKET_URL`          - Web Socket URL of the TB instance
-- `REST_USERNAME`                - Login of the user 
-- `REST_PASSWORD`                - Password of the user
-- `MQTT_HOST`                    - URL of the ThingsBoard MQTT broker
-- `MQTT_PORT`                    - Port of the ThingsBoard MQTT broker
-- `DEVICE_API`                   - Use MQTT or HTTP Device API for send messages
-- `DEVICE_COUNT`                 - Device count to which the messages will be sent
-- `PUBLISH_PAUSE`                - Pause between messages for a single simulated device in milliseconds
-- `PERFORMANCE_DURATION`         - Time for processing of a single message to determine whether the TB instance is working well in milliseconds
-- `EMAIL_ALERT_EMAILS`           - Comma separated list of emails to send an alert in case of TB env troubles
-- `EMAIL_ALERT_PERIOD`           - Time between sending the alert emails (in minutes)
-- `EMAIL_STATUS_EMAIL`           - Comma separated list of emails to send a status of the script
-- `EMAIL_STATUS_PERIOD`          - Time between sending the script status emails (in minutes)
-- `EMAIL_SMTP_USERNAME`          - Email username from which to send the mails
-- `EMAIL_SMTP_PASSWORD`          - Email password from which to send the mails
+- `REST_URL`                              - Rest URL of the TB instance
+- `REST_WEB_SOCKET_URL`                   - Web Socket URL of the TB instance
+- `REST_USERNAME`                         - Login of the user 
+- `REST_PASSWORD`                         - Password of the user
+- `MQTT_HOST`                             - URL of the ThingsBoard MQTT broker
+- `MQTT_PORT`                             - Port of the ThingsBoard MQTT broker
+- `DEVICE_COUNT`                          - Device count to which the messages will be sent
+- `PUBLISH_PAUSE`                         - Pause between messages for a single simulated device in milliseconds
+- `PERFORMANCE_DURATION`                  - Time for processing of a single message to determine whether the TB instance is working well in milliseconds
+- `EMAIL_TB_STATUS_EMAILS`                - Comma separated list of email addresses to send the TB status email
+- `EMAIL_TB_STATUS_EMAILS_PERIOD`         - Time between sending the alert emails (in minutes)
+- `EMAIL_SCRIPT_STATUS_EMAILS`            - Comma separated list of email addresses to send the status of the script email
+- `EMAIL_SCRIPT_STATUS_EMAILS_PERIOD`     - Time between sending the script status emails (in minutes)
+- `EMAIL_SMTP_USERNAME`                   - Email username from which to send the mails
+- `EMAIL_SMTP_PASSWORD`                   - Email password from which to send the mails
 
   
 Once params are configured to run monitoring tool type from the folder where configuration file is located:
