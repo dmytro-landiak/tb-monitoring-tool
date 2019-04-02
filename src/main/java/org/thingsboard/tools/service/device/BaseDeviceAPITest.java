@@ -120,6 +120,7 @@ public class BaseDeviceAPITest implements DeviceAPITest {
     private AsyncRestTemplate httpClient;
     private ScheduledFuture<?> scheduledAlertSendingFuture;
     private ScheduledFuture<?> scheduledSubscriptionFuture;
+    private boolean sentAlertEmail;
 
     @PostConstruct
     void init() {
@@ -442,10 +443,13 @@ public class BaseDeviceAPITest implements DeviceAPITest {
                         if (scheduledAlertSendingFuture != null) {
                             scheduledAlertSendingFuture.cancel(true);
                             scheduledAlertSendingFuture = null;
-                            try {
-                                log.info("Sending an email that TB restored its work!");
-                                emailService.sendRestoringEmail();
-                            } catch (Exception ignored) {
+                            if (sentAlertEmail) {
+                                try {
+                                    log.info("Sending an email that TB restored its work!");
+                                    emailService.sendRestoringEmail();
+                                } catch (Exception ignored) {
+                                }
+                                sentAlertEmail = false;
                             }
                         }
                     }
@@ -485,9 +489,10 @@ public class BaseDeviceAPITest implements DeviceAPITest {
                 try {
                     log.info("Sending an email in case of any troubles with the TB!");
                     emailService.sendAlertEmail();
+                    sentAlertEmail = true;
                 } catch (Exception ignored) {
                 }
-            }, 0, tbStatusEmailsPeriod, TimeUnit.MINUTES);
+            }, 3, tbStatusEmailsPeriod, TimeUnit.MINUTES);
         }
     }
 
